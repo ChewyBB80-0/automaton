@@ -226,6 +226,11 @@ if (LIVE) {
 
   console.log(`live mode: waking every ${SLEEP_MS}ms until stopped\n`);
 
+  // Mark the provenance of this number. The Conway client is stubbed here, so
+  // the credit balance is a local constant, not a real ledger. The console
+  // reads this key and labels the figure rather than presenting it as money.
+  db.setKV("balance_source", "stub");
+  db.setKV("chain_rpc", config.rpcUrl);
   db.setKV("balance_cents", String(balanceCents));
   db.insertTransaction({
     id: `bal_${Date.now()}_0`,

@@ -10,6 +10,8 @@
 import fs from "fs";
 import path from "path";
 import Database from "better-sqlite3";
+import { createPublicClient, http, formatEther, formatUnits, parseAbi } from "viem";
+import { base, baseSepolia } from "viem/chains";
 
 const DB_PATH = process.argv[2];
 const OUT_PATH = process.argv[3];
@@ -123,7 +125,20 @@ const balanceHistory = has("transactions")
     )
   : [];
 
-const kvBalance = one(`SELECT value FROM kv WHERE key = 'balance_cents'`)?.value;
+const kvOf = (k: string): string | undefined =>
+  one(`SELECT value FROM kv WHERE key = ?`, k)?.value;
+
+// Provenance: the runner records whether the credit figure came from a real
+// ledger or a local stub. A stubbed number is never shown as money.
+const balanceSource = kvOf("balance_source") ?? "unknown";
+// Only an explicitly real source is labelled real. Unknown provenance is NOT
+// trusted — defaulting the other way is how a stubbed number gets presented as
+// money, which is the one thing this panel must never do.
+const balanceVerified = balanceSource === "conway";
+const balanceIsStubbed = balanceSource === "stub";
+const balanceUnverified = !balanceVerified && !balanceIsStubbed;
+
+const kvBalance = kvOf("balance_cents");
 const currentBalance =
   kvBalance !== undefined
     ? Number(kvBalance)
@@ -222,6 +237,67 @@ const CRASH_CALLOUT = crashed.length > 0
     </div>`
   : "";
 
+// ─── On-chain balance (real, queried at render time) ───────────────
+// The credit balance above may be stubbed; this is not. It is whatever the
+// chain says, including zero. A network failure reports as unavailable
+// rather than silently rendering 0, which would read as a real empty wallet.
+const CHAINS = {
+  84532: { chain: baseSepolia, usdc: "0x036CbD53842c5426634e7929541eC2318f3dCF7e" },
+  8453: { chain: base, usdc: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" },
+} as const;
+
+const rpcUrl = process.env.RPC_URL || kvOf("chain_rpc") || "https://sepolia.base.org";
+const chainKey = /sepolia/i.test(rpcUrl) ? 84532 : 8453;
+const chainCfg = CHAINS[chainKey];
+
+type OnChain =
+  | { ok: true; eth: string; usdc: string; chainName: string; txCount: number }
+  | { ok: false; reason: string; chainName: string };
+
+let onchain: OnChain = { ok: false, reason: "not queried", chainName: chainCfg.chain.name };
+
+if (process.env.SKIP_CHAIN !== "1" && /^0x[0-9a-fA-F]{40}$/.test(address)) {
+  try {
+    const client = createPublicClient({
+      chain: chainCfg.chain,
+      transport: http(rpcUrl, { timeout: 8_000, retryCount: 1 }),
+    });
+    const addr = address as `0x${string}`;
+    const [wei, txCount, usdcRaw] = await Promise.all([
+      client.getBalance({ address: addr }),
+      client.getTransactionCount({ address: addr }),
+      client
+        .readContract({
+          address: chainCfg.usdc,
+          abi: parseAbi(["function balanceOf(address) view returns (uint256)"]),
+          functionName: "balanceOf",
+          args: [addr],
+        })
+        .catch(() => 0n),
+    ]);
+    onchain = {
+      ok: true,
+      eth: formatEther(wei),
+      usdc: formatUnits(usdcRaw as bigint, 6),
+      chainName: chainCfg.chain.name,
+      txCount,
+    };
+  } catch (err: any) {
+    onchain = {
+      ok: false,
+      reason: err?.shortMessage || err?.message || "RPC unreachable",
+      chainName: chainCfg.chain.name,
+    };
+  }
+}
+
+const trimNum = (v: string) => {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return v;
+  if (n === 0) return "0";
+  return n < 0.0001 ? n.toExponential(2) : String(Number(n.toFixed(6)));
+};
+
 // ─── Cash panel ────────────────────────────────────────────────────
 const balSeries = balanceHistory.map((r: any) => Number(r.c));
 const balMax = balSeries.length ? Math.max(...balSeries) : 0;
@@ -246,49 +322,81 @@ const balPath = (() => {
 const transferOut = spendByCategory.get("transfer") || 0;
 const inferenceSpend = totalCost;
 
+const onchainEth = onchain.ok ? `${trimNum(onchain.eth)} ETH` : "unavailable";
+const onchainUsdc = onchain.ok ? `${trimNum(onchain.usdc)} USDC` : "unavailable";
+
 const CASH_PANEL = `
   <section class="panel">
     <div class="panel-head">
       <div>
         <h2 class="panel-title">Cash</h2>
-        <p class="panel-note">Credit balance snapshotted to <span class="mono">transactions</span> each cycle.</p>
+        <p class="panel-note">On-chain figures are queried live at render time. Credits come from the runtime.</p>
       </div>
-      <span class="pill ${
-        currentBalance === null ? "pill-neutral"
-          : currentBalance <= 0 ? "pill-critical"
-          : currentBalance < 1000 ? "pill-warning"
-          : "pill-good"
-      }">${currentBalance === null ? "no data" : money(currentBalance)}</span>
+      <span class="pill ${onchain.ok ? "pill-neutral" : "pill-warning"}">${esc(onchain.chainName)}</span>
     </div>
+
     <div class="cash-grid">
       <div class="cash-cell">
-        <span class="label">Balance now</span>
-        <span class="cash-value mono">${currentBalance === null ? "—" : money(currentBalance)}</span>
-        <span class="sub">${openingBalance === null ? "" : `opened at ${money(openingBalance)}`}</span>
-      </div>
-      <div class="cash-cell">
-        <span class="label">Spent this run</span>
-        <span class="cash-value mono">${spentSoFar === null ? "—" : money(spentSoFar)}</span>
+        <span class="label">On-chain <span class="tag tag-real">real</span></span>
+        <span class="cash-value mono">${esc(onchainEth)}</span>
         <span class="sub">${
-          spentSoFar === 0 ? "nothing has moved" : "credits out"
+          onchain.ok
+            ? `${esc(onchainUsdc)} · ${onchain.txCount} tx ever sent`
+            : `RPC: ${esc(onchain.reason)}`
+        }</span>
+      </div>
+      <div class="cash-cell${balanceVerified ? "" : " cash-cell-stub"}">
+        <span class="label">Credits ${
+          balanceVerified
+            ? `<span class="tag tag-real">real</span>`
+            : balanceIsStubbed
+              ? `<span class="tag tag-stub">stub</span>`
+              : `<span class="tag tag-stub">unverified</span>`
+        }</span>
+        <span class="cash-value mono">${currentBalance === null ? "—" : money(currentBalance)}</span>
+        <span class="sub">${
+          balanceIsStubbed
+            ? "not a ledger — a constant in the runner"
+            : balanceUnverified
+              ? "provenance not recorded — treat as not money"
+              : `source: ${esc(balanceSource)}`
         }</span>
       </div>
       <div class="cash-cell">
         <span class="label">Transfers out</span>
         <span class="cash-value mono">${money(transferOut)}</span>
-        <span class="sub">from spend_tracking</span>
+        <span class="sub">${transferOut === 0 ? "nothing has moved" : "from spend_tracking"}</span>
       </div>
       <div class="cash-cell">
         <span class="label">Inference</span>
         <span class="cash-value mono">${money(inferenceSpend)}</span>
-        <span class="sub">${totalTokens.toLocaleString("en-US")} tokens</span>
+        <span class="sub">${totalTokens.toLocaleString("en-US")} tokens${
+          inferenceSpend === 0 ? " · local model, free" : ""
+        }</span>
       </div>
     </div>
+
+    <div class="wallet-row mono">${esc(address)}</div>
+
+    ${
+      !balanceVerified
+        ? `<div class="stub-note">
+             The credit figure above is <strong>not money</strong>. ${
+               balanceIsStubbed
+                 ? `This run stubs the Conway client, so <code>getCreditsBalance()</code>
+                    returns a constant and <code>transferCredits()</code> decrements a
+                    local variable.`
+                 : `No source was recorded for it, so it cannot be shown as a real balance.`
+             } The on-chain cell is the only real balance on this page.
+           </div>`
+        : ""
+    }
+
     ${
       balPath
         ? `<div class="cash-chart">
              <svg viewBox="0 0 720 90" preserveAspectRatio="none" role="img"
-                  aria-label="Credit balance across cycles, ${money(openingBalance ?? 0)} to ${money(currentBalance ?? 0)}">
+                  aria-label="Credit balance across cycles">
                <path d="${balPath}" fill="none" stroke="var(--series-1)" stroke-width="2"
                      stroke-linejoin="round" vector-effect="non-scaling-stroke"></path>
              </svg>

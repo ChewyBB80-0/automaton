@@ -261,6 +261,14 @@
   .cash-chart svg { display: block; width: 100%; height: 90px; }
   .cash-axis { display: flex; justify-content: space-between; gap: 1rem; margin-top: 0.5rem; font-size: var(--step--1); color: var(--ink-muted); }
 
+  .tag { font-size: 0.625rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; padding: 0.0625rem 0.3125rem; border-radius: 4px; margin-left: 0.3125rem; vertical-align: 1px; }
+  .tag-real { color: var(--good-ink); background: color-mix(in srgb, var(--good) 14%, transparent); border: 1px solid color-mix(in srgb, var(--good) 34%, transparent); }
+  .tag-stub { color: var(--critical); background: color-mix(in srgb, var(--critical) 12%, transparent); border: 1px solid color-mix(in srgb, var(--critical) 36%, transparent); }
+  .cash-cell-stub { background: color-mix(in srgb, var(--critical) 5%, var(--surface)); }
+  .wallet-row { padding: 0.75rem 1.125rem; border-bottom: 1px solid var(--hairline); color: var(--ink-2); font-size: var(--step--1); word-break: break-all; }
+  .stub-note { margin: 0; padding: 0.875rem 1.125rem; border-bottom: 1px solid var(--hairline); font-size: var(--step--1); color: var(--ink-2); background: color-mix(in srgb, var(--critical) 5%, transparent); }
+  .stub-note code { font-family: var(--mono); font-size: 0.6875rem; background: var(--surface-sunk); border: 1px solid var(--hairline); border-radius: 4px; padding: 0.0625rem 0.25rem; }
+
   .foot { font-size: var(--step--1); color: var(--ink-2); line-height: 1.6; padding: 1.25rem 1.375rem; }
   .foot h2 { font-size: var(--step-1); color: var(--ink); margin: 0 0 0.5rem; }
   .foot code { font-family: var(--mono); font-size: 0.75rem; background: var(--surface-sunk); border: 1px solid var(--hairline); border-radius: 4px; padding: 0.0625rem 0.3125rem; }
