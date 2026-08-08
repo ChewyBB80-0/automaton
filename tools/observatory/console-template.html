@@ -251,6 +251,16 @@
   .crash-line { font-size: var(--step--1); color: var(--ink); background: var(--surface-sunk); border: 1px solid var(--hairline); border-radius: 6px; padding: 0.4375rem 0.625rem; word-break: break-word; }
   .chip-crash { color: var(--critical); border-color: color-mix(in srgb, var(--critical) 40%, transparent); background: color-mix(in srgb, var(--critical) 12%, transparent); }
 
+  .cash-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--hairline); border-bottom: 1px solid var(--hairline); }
+  @media (max-width: 720px) { .cash-grid { grid-template-columns: 1fr 1fr; } }
+  .cash-cell { background: var(--surface); padding: 1rem 1.125rem 1.125rem; display: flex; flex-direction: column; gap: 0.25rem; }
+  .cash-cell .label { font-size: var(--step--1); font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: var(--ink-muted); }
+  .cash-value { font-size: var(--step-3); font-weight: 640; letter-spacing: -0.02em; line-height: 1.15; }
+  .cash-cell .sub { font-size: var(--step--1); color: var(--ink-2); }
+  .cash-chart { padding: 1.125rem 1.125rem 0.875rem; }
+  .cash-chart svg { display: block; width: 100%; height: 90px; }
+  .cash-axis { display: flex; justify-content: space-between; gap: 1rem; margin-top: 0.5rem; font-size: var(--step--1); color: var(--ink-muted); }
+
   .foot { font-size: var(--step--1); color: var(--ink-2); line-height: 1.6; padding: 1.25rem 1.375rem; }
   .foot h2 { font-size: var(--step-1); color: var(--ink); margin: 0 0 0.5rem; }
   .foot code { font-family: var(--mono); font-size: 0.75rem; background: var(--surface-sunk); border: 1px solid var(--hairline); border-radius: 4px; padding: 0.0625rem 0.3125rem; }
@@ -301,15 +311,17 @@
       <span class="sub">{{ALLOWED_COUNT}} allow · {{BLOCKED_COUNT}} deny</span>
     </div>
     <div class="vital">
-      <span class="label">Inference cost</span>
-      <span class="value mono">{{COST}}</span>
-      <span class="sub">this run</span>
+      <span class="label">Balance</span>
+      <span class="value mono">{{BALANCE_NOW}}</span>
+      <span class="sub">{{COST}} inference this run</span>
     </div>
   </section>
 
   {{AUDIT_CALLOUT}}
   {{CRASH_CALLOUT}}
   {{ARGS_CALLOUT}}
+
+  {{CASH_PANEL}}
 
   <section class="panel">
     <div class="panel-head">

@@ -226,6 +226,15 @@ if (LIVE) {
 
   console.log(`live mode: waking every ${SLEEP_MS}ms until stopped\n`);
 
+  db.setKV("balance_cents", String(balanceCents));
+  db.insertTransaction({
+    id: `bal_${Date.now()}_0`,
+    type: "credit_check",
+    balanceAfterCents: balanceCents,
+    description: "opening balance",
+    timestamp: new Date().toISOString(),
+  });
+
   let cycle = 0;
   while (!stopping) {
     cycle++;
@@ -238,6 +247,17 @@ if (LIVE) {
       console.error(`cycle ${cycle} failed: ${err?.message || err}`);
     }
     const turnsNow = (db.raw.prepare(`SELECT COUNT(*) c FROM turns`).get() as any).c;
+
+    // Persist the balance so the console can show and chart it. The runner
+    // holds it in memory; without this the dashboard has no view of cash.
+    db.setKV("balance_cents", String(balanceCents));
+    db.insertTransaction({
+      id: `bal_${Date.now()}_${cycle}`,
+      type: "credit_check",
+      balanceAfterCents: balanceCents,
+      description: `cycle ${cycle} — ${turnsNow} turns`,
+      timestamp: new Date().toISOString(),
+    });
     console.log(
       `cycle ${cycle} done in ${((Date.now() - t0) / 1000).toFixed(1)}s — ` +
         `${turnsNow} turns total, balance ${(balanceCents / 100).toFixed(2)}`,

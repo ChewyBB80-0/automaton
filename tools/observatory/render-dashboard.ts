@@ -113,6 +113,30 @@ for (const s of spend) {
   );
 }
 
+// ─── Cash ──────────────────────────────────────────────────────────
+// The runner holds the credit balance in memory and snapshots it into
+// `transactions` each cycle, so balance history lives in the database.
+const balanceHistory = has("transactions")
+  ? all(
+      `SELECT balance_after_cents AS c, created_at FROM transactions
+       WHERE balance_after_cents IS NOT NULL ORDER BY rowid ASC`,
+    )
+  : [];
+
+const kvBalance = one(`SELECT value FROM kv WHERE key = 'balance_cents'`)?.value;
+const currentBalance =
+  kvBalance !== undefined
+    ? Number(kvBalance)
+    : balanceHistory.length
+      ? Number(balanceHistory[balanceHistory.length - 1].c)
+      : null;
+
+const openingBalance = balanceHistory.length ? Number(balanceHistory[0].c) : null;
+const spentSoFar =
+  openingBalance !== null && currentBalance !== null
+    ? openingBalance - currentBalance
+    : null;
+
 // ─── Self-mod + lineage ────────────────────────────────────────────
 const mods = has("modifications")
   ? all(`SELECT * FROM modifications ORDER BY rowid DESC LIMIT 20`)
@@ -198,6 +222,86 @@ const CRASH_CALLOUT = crashed.length > 0
     </div>`
   : "";
 
+// ─── Cash panel ────────────────────────────────────────────────────
+const balSeries = balanceHistory.map((r: any) => Number(r.c));
+const balMax = balSeries.length ? Math.max(...balSeries) : 0;
+const balMin = balSeries.length ? Math.min(...balSeries) : 0;
+// Give a flat line room to sit mid-band instead of collapsing onto an edge.
+const spanTop = balMax === balMin ? balMax + Math.max(100, balMax * 0.1) : balMax;
+const spanBot = balMax === balMin ? Math.max(0, balMin - Math.max(100, balMax * 0.1)) : balMin;
+
+const balPath = (() => {
+  if (balSeries.length < 2) return "";
+  const W = 720, H = 90;
+  const range = spanTop - spanBot || 1;
+  return balSeries
+    .map((v, i) => {
+      const x = (i / (balSeries.length - 1)) * W;
+      const y = H - ((v - spanBot) / range) * H;
+      return `${i === 0 ? "M" : "L"}${x.toFixed(1)} ${y.toFixed(1)}`;
+    })
+    .join("");
+})();
+
+const transferOut = spendByCategory.get("transfer") || 0;
+const inferenceSpend = totalCost;
+
+const CASH_PANEL = `
+  <section class="panel">
+    <div class="panel-head">
+      <div>
+        <h2 class="panel-title">Cash</h2>
+        <p class="panel-note">Credit balance snapshotted to <span class="mono">transactions</span> each cycle.</p>
+      </div>
+      <span class="pill ${
+        currentBalance === null ? "pill-neutral"
+          : currentBalance <= 0 ? "pill-critical"
+          : currentBalance < 1000 ? "pill-warning"
+          : "pill-good"
+      }">${currentBalance === null ? "no data" : money(currentBalance)}</span>
+    </div>
+    <div class="cash-grid">
+      <div class="cash-cell">
+        <span class="label">Balance now</span>
+        <span class="cash-value mono">${currentBalance === null ? "—" : money(currentBalance)}</span>
+        <span class="sub">${openingBalance === null ? "" : `opened at ${money(openingBalance)}`}</span>
+      </div>
+      <div class="cash-cell">
+        <span class="label">Spent this run</span>
+        <span class="cash-value mono">${spentSoFar === null ? "—" : money(spentSoFar)}</span>
+        <span class="sub">${
+          spentSoFar === 0 ? "nothing has moved" : "credits out"
+        }</span>
+      </div>
+      <div class="cash-cell">
+        <span class="label">Transfers out</span>
+        <span class="cash-value mono">${money(transferOut)}</span>
+        <span class="sub">from spend_tracking</span>
+      </div>
+      <div class="cash-cell">
+        <span class="label">Inference</span>
+        <span class="cash-value mono">${money(inferenceSpend)}</span>
+        <span class="sub">${totalTokens.toLocaleString("en-US")} tokens</span>
+      </div>
+    </div>
+    ${
+      balPath
+        ? `<div class="cash-chart">
+             <svg viewBox="0 0 720 90" preserveAspectRatio="none" role="img"
+                  aria-label="Credit balance across cycles, ${money(openingBalance ?? 0)} to ${money(currentBalance ?? 0)}">
+               <path d="${balPath}" fill="none" stroke="var(--series-1)" stroke-width="2"
+                     stroke-linejoin="round" vector-effect="non-scaling-stroke"></path>
+             </svg>
+             <div class="cash-axis">
+               <span class="mono">${money(openingBalance ?? 0)} at start</span>
+               <span class="mono">${balanceHistory.length} snapshots</span>
+               <span class="mono">${money(currentBalance ?? 0)} now</span>
+             </div>
+           </div>`
+        : `<div class="empty-block">Balance history appears once the agent completes a cycle.</div>`
+    }
+  </section>`;
+
 // ─── Sparkline over per-turn cost ──────────────────────────────────
 const costSeries = turns.slice().reverse().map((t) => t.cost_cents || 0);
 
@@ -214,6 +318,8 @@ const rows = {
   AUDIT_CALLOUT,
   CRASH_CALLOUT,
   ARGS_CALLOUT,
+  CASH_PANEL,
+  BALANCE_NOW: currentBalance === null ? "—" : money(currentBalance),
   INVALID_ARGS: String(invalidArgs.length),
   DENIED_POLICY: String(denied.length),
   INLINE_BLOCKED: String(inlineBlocked.length),
