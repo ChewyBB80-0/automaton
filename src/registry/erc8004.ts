@@ -122,6 +122,27 @@ async function preflight(
     transport: http(resolveRpcUrl(rpcUrl)),
   });
 
+  // Verify the registry actually exists on this chain before spending gas.
+  //
+  // Sending calldata to an address with no code does not revert — the EVM
+  // treats it as a plain transfer, so estimateGas succeeds (~23k, calldata
+  // cost only), the transaction confirms with status "success", and the
+  // receipt carries no logs. Without this check a registration against a
+  // chain where the registry is absent looks like it worked, burns gas, and
+  // records agentId "0".
+  const bytecode = await publicClient.getBytecode({
+    address: functionData.address,
+  });
+  if (!bytecode || bytecode === "0x") {
+    throw new Error(
+      `No contract deployed at ${functionData.address} on ${chain.name} ` +
+        `(chain ${chain.id}). Refusing to send "${functionData.functionName}" — ` +
+        `the transaction would succeed as a plain transfer and register nothing. ` +
+        `Check the network argument, or supply an rpcUrl for the chain where the ` +
+        `registry is deployed.`,
+    );
+  }
+
   // Encode calldata for accurate gas estimation
   const data = encodeFunctionData({
     abi: functionData.abi,
@@ -285,14 +306,31 @@ export async function registerAgent(
     gasUsed,
   );
 
+  if (receipt.status !== "success") {
+    throw new Error(
+      `ERC-8004 registration reverted on ${chain.name} (tx ${hash}). Nothing was registered.`,
+    );
+  }
+
   // Phase 3.2: Extract agentId using Transfer event topic signature
-  let agentId = "0";
+  let agentId: string | undefined;
   for (const log of receipt.logs) {
     if (log.topics.length >= 4 && log.topics[0] === TRANSFER_EVENT_TOPIC) {
       // Transfer(address from, address to, uint256 tokenId)
       agentId = BigInt(log.topics[3]!).toString();
       break;
     }
+  }
+
+  // A mint always emits Transfer. Its absence means the call did not reach the
+  // registry, so there is no agent ID — recording "0" here would persist a
+  // registration that does not exist and make every later lookup wrong.
+  if (agentId === undefined) {
+    throw new Error(
+      `ERC-8004 registration produced no Transfer event on ${chain.name} ` +
+        `(tx ${hash}). The transaction confirmed but no agent was minted — ` +
+        `gas was spent and nothing is registered.`,
+    );
   }
 
   const entry: RegistryEntry = {

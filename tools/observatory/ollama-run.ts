@@ -94,6 +94,9 @@ const config: any = {
   version: "0.2.1",
   skillsDir: path.join(OUT, "skills"),
   maxChildren: 0,
+  // Base Sepolia by default — testnet, so nothing on-chain costs real money.
+  rpcUrl: process.env.RPC_URL || "https://sepolia.base.org",
+  chainType: "evm",
   maxTurnsPerCycle: Number(process.env.MAX_TURNS || 8),
   treasuryPolicy,
 };
