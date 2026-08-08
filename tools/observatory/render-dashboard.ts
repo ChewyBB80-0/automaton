@@ -400,10 +400,15 @@ const CASH_PANEL = `
               ? `<span class="tag tag-stub">stub</span>`
               : `<span class="tag tag-stub">unverified</span>`
         }</span>
-        <span class="cash-value mono">${currentBalance === null ? "—" : money(currentBalance)}</span>
+        <span class="cash-value mono">${
+          // A figure that is not money is not printed as one. Rendering it
+          // beside a real on-chain balance invites reading it as cash, which
+          // no amount of caption reliably undoes.
+          balanceVerified && currentBalance !== null ? money(currentBalance) : "—"
+        }</span>
         <span class="sub">${
           balanceIsStubbed
-            ? "not a ledger — a constant in the runner"
+            ? "no credit source — the runner holds a constant, not shown as a figure"
             : balanceUnverified
               ? "provenance not recorded — treat as not money"
               : `source: ${esc(balanceSource)}`
@@ -440,7 +445,7 @@ const CASH_PANEL = `
     }
 
     ${
-      balPath
+      balanceVerified && balPath
         ? `<div class="cash-chart">
              <svg viewBox="0 0 720 90" preserveAspectRatio="none" role="img"
                   aria-label="Credit balance across cycles">
@@ -476,7 +481,8 @@ const rows = {
   REMOTE_CALLOUT,
   REMOTE_ERRORS: String(remoteErrors.length),
   CASH_PANEL,
-  BALANCE_NOW: currentBalance === null ? "—" : money(currentBalance),
+  // Never surface an unverified balance as a headline figure.
+  BALANCE_NOW: balanceVerified && currentBalance !== null ? money(currentBalance) : "—",
   INVALID_ARGS: String(invalidArgs.length),
   DENIED_POLICY: String(denied.length),
   INLINE_BLOCKED: String(inlineBlocked.length),
