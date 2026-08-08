@@ -90,3 +90,27 @@ the second path, so the engine logs the call as `allow`. An audit built only on
 `amountCents: 0`, so the hourly and daily x402 envelopes derived from
 `maxX402PaymentCents` can never trip. The meter is labelled accordingly rather
 than showing a reassuring empty bar.
+
+## Tool arguments are cast, not validated
+
+A live model produced this on its first unscripted run:
+
+```
+create_goal → Cannot read properties of undefined (reading 'trim')
+```
+
+`create_goal` declares `required: ["title", "description"]` in its JSON schema,
+but the schema is advisory — nothing checks it at runtime. The implementation
+does `(args.title as string).trim()`, so a model that supplies only
+`description` hits a `TypeError`. `executeTool` catches it, so the loop
+survives, but the turn is wasted and the model receives an opaque message with
+no indication of which argument was missing.
+
+This is not exotic. Weaker or cheaper models omit required fields routinely, and
+the same `as string` cast pattern appears across `tools.ts`. A generic
+required-field check in `executeTool`, returning a message naming the missing
+argument, would convert a crash into a turn the model can recover from.
+
+The console separates the three ways a call can fail — policy denial, tool
+crash, and in-tool guard — because they mean different things and only the first
+is recorded in `policy_decisions`.

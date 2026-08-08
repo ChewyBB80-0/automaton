@@ -216,9 +216,19 @@ const toolCalls = raw
   .all();
 const turnCount = (raw.prepare(`SELECT COUNT(*) c FROM turns`).get() as any).c;
 
+// A tool call can fail two different ways and they must not be conflated:
+// the policy engine refusing it, or the tool implementation throwing.
+const deniedArgsHashes = new Set(
+  (decisions as any[]).filter((d) => d.decision !== "allow").map((d) => d.tool_name),
+);
+
 console.log("\n─── what the model chose to do ───");
 for (const t of toolCalls as any[]) {
-  const status = t.error ? "DENIED" : "ok    ";
+  const status = !t.error
+    ? "ok    "
+    : String(t.error).startsWith("Policy denied:")
+      ? "DENIED"
+      : "CRASH ";
   let args = "";
   try {
     const o = JSON.parse(t.arguments);

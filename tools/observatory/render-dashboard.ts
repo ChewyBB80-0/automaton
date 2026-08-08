@@ -70,15 +70,23 @@ for (const c of toolCalls) {
   callsByTurn.get(c.turn_id)!.push(c);
 }
 
-// A tool can be stopped two ways: the policy engine refuses it (error), or
-// the tool's own guard returns a "Blocked:" string with no error set.
-const isPolicyDenied = (c: any) => !!c.error;
+// A tool call can end three different ways that all look like "not ok", and
+// conflating them hides real problems:
+//   1. the policy engine refused it        → error starts with "Policy denied:"
+//   2. the tool implementation threw       → error set, but not a policy denial
+//   3. the tool's own guard refused it     → no error, result starts "Blocked:"
+// Only (1) lands in policy_decisions as a denial. (3) is logged there as allow.
+const isPolicyDenied = (c: any) =>
+  !!c.error && String(c.error).startsWith("Policy denied:");
+const isCrash = (c: any) =>
+  !!c.error && !String(c.error).startsWith("Policy denied:");
 const isInlineBlocked = (c: any) =>
   !c.error && typeof c.result === "string" && c.result.startsWith("Blocked:");
 const isBlocked = (c: any) => isPolicyDenied(c) || isInlineBlocked(c);
 
 const blockedCalls = toolCalls.filter(isBlocked);
 const inlineBlocked = toolCalls.filter(isInlineBlocked);
+const crashed = toolCalls.filter(isCrash);
 
 // ─── Policy decisions ──────────────────────────────────────────────
 const decisions = has("policy_decisions")
@@ -145,11 +153,34 @@ const timeOf = (ts: string) => {
 const firstLine = (s: string) =>
   String(s || "").split("\n")[0].slice(0, 160);
 
-const outcomePill = (c: any) => {
-  if (isPolicyDenied(c)) return `<span class="pill pill-critical">denied</span>`;
-  if (isInlineBlocked(c)) return `<span class="pill pill-warning">blocked</span>`;
-  return `<span class="pill pill-good">ok</span>`;
-};
+// The audit-gap callout is only true when the two counts actually disagree.
+const auditGap = inlineBlocked.length > 0;
+const AUDIT_CALLOUT = auditGap
+  ? `<div class="callout">
+      <h2>The two counts above don't match — and that's a real gap</h2>
+      <p><strong>${blockedCalls.length}</strong> tool calls were stopped, but <code>policy_decisions</code>
+      only recorded <strong>${denied.length}</strong> of them as denials. The other
+      <strong>${inlineBlocked.length}</strong> were refused <em>inside</em> the tool implementation —
+      <code>write_file</code>'s path confinement returns a plain <code>"Blocked: …"</code> string with no
+      error set, so the policy engine logged the call as <code>allow</code>. Any audit built only on
+      <code>policy_decisions</code> under-reports what the agent actually attempted.</p>
+    </div>`
+  : "";
+
+const CRASH_CALLOUT = crashed.length > 0
+  ? `<div class="callout callout-crash">
+      <h2>${crashed.length} tool call${crashed.length === 1 ? "" : "s"} crashed on malformed arguments</h2>
+      <p>Not a policy refusal — the tool implementation threw. Tool arguments are cast
+      (<code>args.title as string</code>) rather than validated, so a model that omits a field
+      declared <code>required</code> in the schema hits a <code>TypeError</code> at runtime. The loop
+      catches it, but the turn is burnt and the model gets an opaque message it cannot act on:</p>
+      ${crashed
+        .map(
+          (c) => `<p class="crash-line mono">${esc(c.name)} → ${esc(firstLine(c.error))}</p>`,
+        )
+        .join("")}
+    </div>`
+  : "";
 
 // ─── Sparkline over per-turn cost ──────────────────────────────────
 const costSeries = turns.slice().reverse().map((t) => t.cost_cents || 0);
@@ -163,6 +194,9 @@ const rows = {
   TURNS: String(turnCount),
   TOOLCALLS: String(toolCalls.length),
   BLOCKED: String(blockedCalls.length),
+  CRASHED: String(crashed.length),
+  AUDIT_CALLOUT,
+  CRASH_CALLOUT,
   DENIED_POLICY: String(denied.length),
   INLINE_BLOCKED: String(inlineBlocked.length),
   NAME: esc(name),
@@ -257,14 +291,18 @@ const rows = {
               .map((c) => {
                 const cls = isPolicyDenied(c)
                   ? "chip chip-denied"
-                  : isInlineBlocked(c)
-                    ? "chip chip-blocked"
-                    : "chip";
+                  : isCrash(c)
+                    ? "chip chip-crash"
+                    : isInlineBlocked(c)
+                      ? "chip chip-blocked"
+                      : "chip";
                 const suffix = isPolicyDenied(c)
                   ? " · denied"
-                  : isInlineBlocked(c)
-                    ? " · blocked"
-                    : "";
+                  : isCrash(c)
+                    ? " · crashed"
+                    : isInlineBlocked(c)
+                      ? " · blocked"
+                      : "";
                 return `<span class="${cls}">${esc(c.name)}${suffix}</span>`;
               })
               .join("");
