@@ -50,9 +50,21 @@ credits move, no identity is registered.
 ```bash
 ollama serve &
 ollama pull qwen2.5:3b
+
+# one cycle
 npx tsx tools/observatory/ollama-run.ts
+
+# or keep it running until you stop it
+LIVE=1 npx tsx tools/observatory/ollama-run.ts
+
+# watch it in a browser
 npx tsx tools/observatory/serve.ts tools/observatory/.live/state.db
 ```
+
+`LIVE=1` wakes the agent repeatedly instead of running one cycle and exiting.
+A failed cycle is logged and the supervisor continues. `SLEEP_MS` sets the gap
+between wakes (default 10s), `MAX_TURNS` caps turns per cycle, and `FRESH=1`
+starts from an empty database — live mode otherwise accumulates across restarts.
 
 ### Configuring Ollama is not enough on its own
 
