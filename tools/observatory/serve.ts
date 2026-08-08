@@ -19,7 +19,7 @@ import os from "os";
 const DB_PATH = process.argv[2];
 const PORT = Number(process.argv[3] || process.env.PORT || 7717);
 const HOST = process.env.HOST || "127.0.0.1";
-const REFRESH_MS = Number(process.env.REFRESH_MS || 4000);
+const REFRESH_MS = Number(process.env.REFRESH_MS || 120_000);
 
 if (!DB_PATH) {
   console.error("usage: serve.ts <state.db> [port]");
