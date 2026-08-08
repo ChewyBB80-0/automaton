@@ -249,6 +249,7 @@
 
   .callout-crash { border-left-color: var(--critical); background: color-mix(in srgb, var(--critical) 7%, var(--surface)); }
   .crash-line { font-size: var(--step--1); color: var(--ink); background: var(--surface-sunk); border: 1px solid var(--hairline); border-radius: 6px; padding: 0.4375rem 0.625rem; word-break: break-word; }
+  .chip-remote { color: var(--ink-2); border-color: var(--hairline-2); background: var(--surface-sunk); font-style: italic; }
   .chip-crash { color: var(--critical); border-color: color-mix(in srgb, var(--critical) 40%, transparent); background: color-mix(in srgb, var(--critical) 12%, transparent); }
 
   .cash-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--hairline); border-bottom: 1px solid var(--hairline); }
@@ -311,7 +312,7 @@
     <div class="vital">
       <span class="label">Bad args</span>
       <span class="value mono">{{INVALID_ARGS}}</span>
-      <span class="sub">{{CRASHED}} crashed outright</span>
+      <span class="sub">{{CRASHED}} crashed · {{REMOTE_ERRORS}} upstream</span>
     </div>
     <div class="vital">
       <span class="label">Decisions logged</span>
@@ -328,6 +329,7 @@
   {{AUDIT_CALLOUT}}
   {{CRASH_CALLOUT}}
   {{ARGS_CALLOUT}}
+  {{REMOTE_CALLOUT}}
 
   {{CASH_PANEL}}
 

@@ -51,7 +51,14 @@ export function createConwayClient(options: ConwayClientOptions): ConwayClient {
     // Conway LB has an intermittent routing bug that returns 404 for valid
     // sandbox endpoints. Retry 404s here (outside ResilientHttpClient) to
     // avoid tripping the circuit breaker on transient routing failures.
-    const max404Retries = requestOptions?.retries404 ?? 3;
+    //
+    // Scope the retry to the endpoints that bug actually affects. Applying it
+    // everywhere means a permanently absent path is requested four times
+    // before failing — /v1/domains/* currently 404s on every call, with and
+    // without credentials, so each domain tool costs four round trips to
+    // arrive at the same answer.
+    const retriable404 = path.startsWith("/v1/sandboxes");
+    const max404Retries = requestOptions?.retries404 ?? (retriable404 ? 3 : 0);
     for (let attempt = 0; attempt <= max404Retries; attempt++) {
       const resp = await httpClient.request(`${apiUrl}${path}`, {
         method,

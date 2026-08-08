@@ -83,8 +83,12 @@ const isPolicyDenied = (c: any) =>
   !!c.error && String(c.error).startsWith("Policy denied:");
 const isInvalidArgs = (c: any) =>
   !!c.error && String(c.error).startsWith("Invalid arguments:");
+// A remote API failure is not a crash in this tool's code — conflating the two
+// blames the wrong layer and points the reader at the wrong fix.
+const isRemoteError = (c: any) =>
+  !!c.error && /Conway API error|API error:|\b(4\d\d|5\d\d)\b.*(Not Found|Unauthorized|Forbidden|Server Error)/i.test(String(c.error));
 const isCrash = (c: any) =>
-  !!c.error && !isPolicyDenied(c) && !isInvalidArgs(c);
+  !!c.error && !isPolicyDenied(c) && !isInvalidArgs(c) && !isRemoteError(c);
 const isInlineBlocked = (c: any) =>
   !c.error && typeof c.result === "string" && c.result.startsWith("Blocked:");
 const isBlocked = (c: any) => isPolicyDenied(c) || isInlineBlocked(c);
@@ -92,6 +96,7 @@ const isBlocked = (c: any) => isPolicyDenied(c) || isInlineBlocked(c);
 const blockedCalls = toolCalls.filter(isBlocked);
 const inlineBlocked = toolCalls.filter(isInlineBlocked);
 const crashed = toolCalls.filter(isCrash);
+const remoteErrors = toolCalls.filter(isRemoteError);
 const invalidArgs = toolCalls.filter(isInvalidArgs);
 
 // ─── Policy decisions ──────────────────────────────────────────────
@@ -218,6 +223,18 @@ const ARGS_CALLOUT = invalidArgs.length > 0
       the tool. The turn is still spent, but the model can correct itself:</p>
       ${invalidArgs
         .map((c) => `<p class="crash-line mono">${esc(c.name)} → ${esc(firstLine(c.error))}</p>`)
+        .join("")}
+    </div>`
+  : "";
+
+const REMOTE_CALLOUT = remoteErrors.length > 0
+  ? `<div class="callout">
+      <h2>${remoteErrors.length} call${remoteErrors.length === 1 ? "" : "s"} failed upstream, not locally</h2>
+      <p>The tool ran and the remote API rejected it. Nothing here is fixable in this
+      codebase — it needs credentials, or the endpoint to exist:</p>
+      ${[...new Set(remoteErrors.map((c: any) => `${c.name} → ${firstLine(c.error)}`))]
+        .slice(0, 6)
+        .map((l) => `<p class="crash-line mono">${esc(l)}</p>`)
         .join("")}
     </div>`
   : "";
@@ -426,6 +443,8 @@ const rows = {
   AUDIT_CALLOUT,
   CRASH_CALLOUT,
   ARGS_CALLOUT,
+  REMOTE_CALLOUT,
+  REMOTE_ERRORS: String(remoteErrors.length),
   CASH_PANEL,
   BALANCE_NOW: currentBalance === null ? "—" : money(currentBalance),
   INVALID_ARGS: String(invalidArgs.length),
@@ -525,6 +544,8 @@ const rows = {
                   ? "chip chip-denied"
                   : isCrash(c)
                     ? "chip chip-crash"
+                    : isRemoteError(c)
+                      ? "chip chip-remote"
                     : isInvalidArgs(c)
                       ? "chip chip-blocked"
                     : isInlineBlocked(c)
@@ -534,6 +555,8 @@ const rows = {
                   ? " · denied"
                   : isCrash(c)
                     ? " · crashed"
+                    : isRemoteError(c)
+                      ? " · upstream"
                     : isInvalidArgs(c)
                       ? " · bad args"
                     : isInlineBlocked(c)
