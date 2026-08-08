@@ -142,7 +142,46 @@ export async function runAgentLoop(
     await discoverOllamaModels(ollamaBaseUrl, db.raw);
   }
   const budgetTracker = new InferenceBudgetTracker(db.raw, modelStrategyConfig);
-  const inferenceRouter = new InferenceRouter(db.raw, modelRegistry, budgetTracker);
+
+  // A provider is only a candidate if it can actually be reached. Without this
+  // the router would pick a Conway/OpenAI model that has no usable credentials
+  // and fail the turn, while a configured local model sat further down the list.
+  // This must mirror resolveInferenceBackend() in conway/inference.ts, which is
+  // what actually decides where a request goes. A model's registered provider
+  // is not the backend: Conway's API is OpenAI-compatible, so OpenAI-named
+  // models route to Conway whenever no direct OpenAI key is set, and anything
+  // unrecognised falls through to Conway as well. Treating the provider name as
+  // the backend rejects every baseline model when only a Conway key exists,
+  // which leaves no selectable model at all.
+  const isProviderUsable = (provider: string): boolean => {
+    switch (provider) {
+      case "ollama":
+        return !!ollamaBaseUrl;
+      case "anthropic":
+        return !!config.anthropicApiKey;
+      case "openai":
+        return !!(config.openaiApiKey || config.conwayApiKey);
+      case "conway":
+      default:
+        return !!config.conwayApiKey;
+    }
+  };
+
+  const inferenceRouter = new InferenceRouter(
+    db.raw,
+    modelRegistry,
+    budgetTracker,
+    isProviderUsable,
+  );
+
+  // Without a Conway account the credit ledger does not exist, so the survival
+  // signal comes from the wallet's on-chain USDC instead. The pressure stays
+  // real — the agent still dies when the balance runs out — but it is measured
+  // against something that actually exists.
+  const creditSource: "conway" | "onchain" = config.conwayApiKey ? "conway" : "onchain";
+  if (creditSource === "onchain") {
+    log(config, "[ECONOMY] No Conway credits — using on-chain USDC as the survival signal.");
+  }
 
   // Optional orchestration bootstrap (requires V9 goals/task tables)
   let planModeController: PlanModeController | undefined;
@@ -378,7 +417,7 @@ export async function runAgentLoop(
   onStateChange?.("waking");
 
   // Get financial state
-  let financial = await getFinancialState(conway, identity.address, db, config.chainType || identity.chainType || "evm");
+  let financial = await getFinancialState(conway, identity.address, db, config.chainType || identity.chainType || "evm", creditSource);
 
   // Check if this is the first run
   const isFirstRun = db.getTurnCount() === 0;
@@ -446,7 +485,7 @@ export async function runAgentLoop(
       }
 
       // Refresh financial state periodically
-      financial = await getFinancialState(conway, identity.address, db, config.chainType || identity.chainType || "evm");
+      financial = await getFinancialState(conway, identity.address, db, config.chainType || identity.chainType || "evm", creditSource);
 
       // Check survival tier
       // api_unreachable: creditsCents === -1 means API failed with no cache.
@@ -481,7 +520,7 @@ export async function runAgentLoop(
                 log(config, `[AUTO-TOPUP] Bought $${topupResult.amountUsd} credits from USDC mid-loop`);
                 // Re-fetch financial state after topup so the rest of
                 // the turn sees the updated balance.
-                financial = await getFinancialState(conway, identity.address, db, config.chainType || identity.chainType || "evm");
+                financial = await getFinancialState(conway, identity.address, db, config.chainType || identity.chainType || "evm", creditSource);
               }
             } catch (err: any) {
               logger.warn(`Inline auto-topup failed: ${err.message}`);
@@ -968,9 +1007,34 @@ async function getFinancialState(
   address: string,
   db?: AutomatonDatabase,
   chainType?: string,
+  creditSource: "conway" | "onchain" = "conway",
 ): Promise<FinancialState> {
   let creditsCents = _lastKnownCredits;
   let usdcBalance = _lastKnownUsdc;
+
+  // With no Conway account there are no credits to read. Calling anyway fails,
+  // and the failure path returns -1 — which getSurvivalTier() reads as
+  // API-confirmed debt and therefore "dead", so an otherwise healthy local run
+  // begins life already dead. On-chain USDC becomes the economy instead: the
+  // agent still dies when the wallet empties, but from a balance that is real.
+  if (creditSource === "onchain") {
+    let onchainUsdc = _lastKnownUsdc;
+    try {
+      const network = chainType === "solana" ? "solana:mainnet" : "eip155:8453";
+      onchainUsdc = await getUsdcBalance(address, network, chainType as any);
+      if (onchainUsdc > 0) _lastKnownUsdc = onchainUsdc;
+    } catch (error) {
+      logger.error(
+        "USDC balance fetch failed",
+        error instanceof Error ? error : undefined,
+      );
+    }
+    return {
+      creditsCents: Math.round(onchainUsdc * 100),
+      usdcBalance: onchainUsdc,
+      lastChecked: new Date().toISOString(),
+    };
+  }
 
   try {
     creditsCents = await conway.getCreditsBalance();

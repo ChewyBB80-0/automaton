@@ -197,10 +197,40 @@ async function run(): Promise<void> {
   const { account, chainIdentity, chainType: walletChainType } = await getWallet();
   const resolvedChainType = config.chainType || walletChainType || "evm";
   const apiKey = config.conwayApiKey || loadApiKeyFromConfig();
+
+  // A Conway key is required for Conway-backed capabilities — credits,
+  // sandboxes, port exposure — but not to run. Thinking (via Ollama or a direct
+  // provider key), the local shell, files, self-modification, git, skills,
+  // memory and all on-chain work need no Conway account at all. Exiting here
+  // made an entirely local run impossible even when one was fully configured.
+  //
+  // Without a key the startup capability probe withholds the Conway-backed
+  // tools, so the model is never offered something that cannot work.
+  const hasLocalInference =
+    !!(process.env.OLLAMA_BASE_URL || config.ollamaBaseUrl);
+  const hasDirectProviderKey = !!(config.openaiApiKey || config.anthropicApiKey);
+
   if (!apiKey) {
-    logger.error("No API key found. Run: automaton --provision");
-    process.exit(1);
+    if (!hasLocalInference && !hasDirectProviderKey) {
+      logger.error(
+        "No API key found, and no other inference backend is configured.\n" +
+          "  Provision Conway:  automaton --provision\n" +
+          "  Or run locally:    set OLLAMA_BASE_URL (e.g. http://127.0.0.1:11434)\n" +
+          "  Or use a provider: set openaiApiKey or anthropicApiKey in the config",
+      );
+      process.exit(1);
+    }
+    logger.warn(
+      "No Conway API key — starting in local mode. Credits, sandboxes and port " +
+        "exposure are unavailable, and their tools will be withheld. " +
+        "NOTE: with no sandbox, shell commands run on THIS host.",
+    );
   }
+
+  // Downstream clients take a string. Empty means "no credentials": Conway
+  // requests get a 401 the capability probe already accounts for, rather than
+  // this being threaded as null through every call site.
+  const conwayApiKey: string = apiKey || "";
 
   // Initialize database
   const dbPath = resolvePath(config.dbPath);
@@ -220,7 +250,7 @@ async function run(): Promise<void> {
     account,
     creatorAddress: config.creatorAddress,
     sandboxId: config.sandboxId,
-    apiKey,
+    apiKey: conwayApiKey,
     createdAt,
     chainType: resolvedChainType,
     chainIdentity,
@@ -241,7 +271,7 @@ async function run(): Promise<void> {
   // Create Conway client
   const conway = createConwayClient({
     apiUrl: config.conwayApiUrl,
-    apiKey,
+    apiKey: conwayApiKey,
     sandboxId: config.sandboxId,
   });
 
@@ -286,7 +316,7 @@ async function run(): Promise<void> {
   modelRegistry.initialize();
   const inference = createInferenceClient({
     apiUrl: config.conwayApiUrl,
-    apiKey,
+    apiKey: conwayApiKey,
     defaultModel: config.inferenceModel,
     maxTokens: config.maxTokensPerTurn,
     lowComputeModel: config.modelStrategy?.lowComputeModel || "gpt-5-mini",

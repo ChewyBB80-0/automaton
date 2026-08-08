@@ -24,15 +24,29 @@ import { DEFAULT_ROUTING_MATRIX, TASK_TIMEOUTS } from "./types.js";
 
 type Database = BetterSqlite3.Database;
 
+/**
+ * Whether a provider can actually be reached — i.e. its credentials or base URL
+ * are configured. Used to skip routing-matrix candidates that would fail.
+ */
+export type ProviderUsableFn = (provider: ModelProvider | string) => boolean;
+
 export class InferenceRouter {
   private db: Database;
   private registry: ModelRegistry;
   private budget: InferenceBudgetTracker;
+  private isProviderUsable: ProviderUsableFn;
 
-  constructor(db: Database, registry: ModelRegistry, budget: InferenceBudgetTracker) {
+  constructor(
+    db: Database,
+    registry: ModelRegistry,
+    budget: InferenceBudgetTracker,
+    isProviderUsable?: ProviderUsableFn,
+  ) {
     this.db = db;
     this.registry = registry;
     this.budget = budget;
+    // Default keeps existing behaviour for callers that do not supply one.
+    this.isProviderUsable = isProviderUsable ?? (() => true);
   }
 
   /**
@@ -195,37 +209,51 @@ export class InferenceRouter {
     };
 
     const tierRank = TIER_ORDER[tier] ?? 0;
-
-    // 1. Try routing-matrix candidates
-    const preference = this.getPreference(tier, taskType);
-    if (preference && preference.candidates.length > 0) {
-      for (const candidateId of preference.candidates) {
-        const entry = this.registry.get(candidateId);
-        if (entry && entry.enabled) {
-          return entry;
-        }
-      }
-    }
-
-    // 2. Fall back to user-configured models.
-    //    This handles local/Ollama setups where routing-matrix models are absent.
     const strategy = this.budget.config;
-    const fallbackIds: (string | undefined)[] =
+
+    const usable = (entry: ModelEntry | undefined): entry is ModelEntry =>
+      !!entry && entry.enabled && this.isProviderUsable(entry.provider);
+
+    const tierAllows = (entry: ModelEntry): boolean => {
+      const isFree = entry.costPer1kInput === 0 && entry.costPer1kOutput === 0;
+      return isFree || tierRank >= (TIER_ORDER[entry.tierMinimum] ?? 0);
+    };
+
+    // 1. The operator's explicitly configured model wins.
+    //
+    //    This used to come second, behind the hardcoded routing matrix. Because
+    //    ModelRegistry.initialize() re-seeds the baseline Conway/OpenAI models
+    //    as enabled on every startup, a matrix candidate was always present and
+    //    the configured model was never reached — so setting a local Ollama
+    //    model still sent the turn to Conway, while the log printed the local
+    //    model's name. Configuration must beat a built-in default.
+    const configuredIds: (string | undefined)[] =
       tier === "critical" || tier === "dead"
         ? [strategy.criticalModel, strategy.inferenceModel, strategy.lowComputeModel]
         : [strategy.inferenceModel, strategy.lowComputeModel, strategy.criticalModel];
 
-    for (const modelId of fallbackIds) {
+    for (const modelId of configuredIds) {
       if (!modelId) continue;
       const entry = this.registry.get(modelId);
-      if (!entry || !entry.enabled) continue;
-      const isFree = entry.costPer1kInput === 0 && entry.costPer1kOutput === 0;
-      const tierOk = tierRank >= (TIER_ORDER[entry.tierMinimum] ?? 0);
-      if (isFree || tierOk) {
-        return entry;
+      if (usable(entry) && tierAllows(entry)) return entry;
+    }
+
+    // 2. Fall back to the routing matrix, skipping providers that cannot be
+    //    reached. A candidate whose provider has no credentials is not a
+    //    fallback — it is a guaranteed failure that hides a working option
+    //    further down the list.
+    const preference = this.getPreference(tier, taskType);
+    if (preference && preference.candidates.length > 0) {
+      for (const candidateId of preference.candidates) {
+        const entry = this.registry.get(candidateId);
+        if (usable(entry)) return entry;
       }
     }
 
+    // No third fallback on purpose. Returning null at a low tier for a
+    // non-essential task is deliberate load-shedding — the agent declining work
+    // it cannot afford is the survival mechanic, not a routing failure. A
+    // sweep for "anything reachable" here would quietly defeat it.
     return null;
   }
 
