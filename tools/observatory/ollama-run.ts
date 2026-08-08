@@ -50,18 +50,49 @@ const FRESH = process.env.FRESH === "1" || !LIVE;
 
 if (FRESH && fs.existsSync(DB_PATH)) fs.unlinkSync(DB_PATH);
 
-// Tight caps so the treasury rules actually bite within a short run.
+// Treasury policy, configurable from the environment.
+//
+// Defaults stay tight so a short run exercises the rules. Widen any of them to
+// give the agent more financial room:
+//
+//   MAX_SINGLE_TRANSFER_CENTS   per-transfer ceiling        (default 500)
+//   MAX_HOURLY_TRANSFER_CENTS   rolling hourly ceiling      (default 1000)
+//   MAX_DAILY_TRANSFER_CENTS    rolling daily ceiling       (default 2000)
+//   MAX_X402_PAYMENT_CENTS      per-x402-payment ceiling    (default 100)
+//   X402_ALLOWED_DOMAINS        comma-separated allowlist   (default conway.tech)
+//   MAX_TRANSFERS_PER_TURN      transfers in one turn       (default 2)
+//   MIN_RESERVE_CENTS           balance floor               (default 100)
+//
+// Note that the x402 allowlist is the only one of these that is a real
+// boundary rather than a budget: an empty list disables x402 entirely, and
+// "*" is not a wildcard — list the hosts you actually intend to pay.
+const num = (name: string, fallback: number): number => {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    console.warn(`ignoring ${name}="${raw}" — not a non-negative number`);
+    return fallback;
+  }
+  return parsed;
+};
+
+const x402AllowedDomains = (process.env.X402_ALLOWED_DOMAINS ?? "conway.tech")
+  .split(",")
+  .map((d) => d.trim())
+  .filter(Boolean);
+
 const treasuryPolicy = {
-  maxSingleTransferCents: 500,
-  maxHourlyTransferCents: 1000,
-  maxDailyTransferCents: 2000,
-  minimumReserveCents: 100,
-  maxX402PaymentCents: 100,
-  x402AllowedDomains: ["conway.tech"],
-  transferCooldownMs: 0,
-  maxTransfersPerTurn: 2,
-  maxInferenceDailyCents: 900,
-  requireConfirmationAboveCents: 1000,
+  maxSingleTransferCents: num("MAX_SINGLE_TRANSFER_CENTS", 500),
+  maxHourlyTransferCents: num("MAX_HOURLY_TRANSFER_CENTS", 1000),
+  maxDailyTransferCents: num("MAX_DAILY_TRANSFER_CENTS", 2000),
+  minimumReserveCents: num("MIN_RESERVE_CENTS", 100),
+  maxX402PaymentCents: num("MAX_X402_PAYMENT_CENTS", 100),
+  x402AllowedDomains,
+  transferCooldownMs: num("TRANSFER_COOLDOWN_MS", 0),
+  maxTransfersPerTurn: num("MAX_TRANSFERS_PER_TURN", 2),
+  maxInferenceDailyCents: num("MAX_INFERENCE_DAILY_CENTS", 900),
+  requireConfirmationAboveCents: num("REQUIRE_CONFIRMATION_ABOVE_CENTS", 1000),
 };
 
 const db = createDatabase(DB_PATH);
@@ -199,6 +230,16 @@ console.log("─".repeat(72));
 console.log(`  automaton — live model: ${OLLAMA_MODEL} @ ${OLLAMA_BASE_URL}`);
 console.log(`  sandboxId empty → exec runs on THIS host`);
 console.log(`  db: ${DB_PATH}`);
+console.log(
+  `  treasury: single ${treasuryPolicy.maxSingleTransferCents}c · ` +
+    `hourly ${treasuryPolicy.maxHourlyTransferCents}c · ` +
+    `daily ${treasuryPolicy.maxDailyTransferCents}c`,
+);
+console.log(
+  `  x402: ${
+    x402AllowedDomains.length ? x402AllowedDomains.join(", ") : "(disabled — empty allowlist)"
+  } · max ${treasuryPolicy.maxX402PaymentCents}c/payment`,
+);
 console.log("─".repeat(72));
 
 const started = Date.now();
