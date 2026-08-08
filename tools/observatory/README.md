@@ -30,6 +30,53 @@ npx tsx tools/observatory/render-dashboard.ts \
 
 Output lands in `tools/observatory/.demo/` (override with `AUTOMATON_DEMO_OUT`).
 
+## Serve it live
+
+```bash
+npx tsx tools/observatory/serve.ts ~/.automaton/state.db 7717
+```
+
+Serves on `127.0.0.1:7717` and re-renders from the database on every request, so
+the page tracks the agent while it runs. It reloads itself every few seconds;
+there is a live/paused toggle in the corner, and scroll position survives the
+reload. Nothing is cached and the database is only ever opened read-only.
+
+## Run it against a local model
+
+`ollama-run.ts` drives the real loop with a live local model instead of a
+scripted one, so the agent actually improvises. Conway stays stubbed — no
+credits move, no identity is registered.
+
+```bash
+ollama serve &
+ollama pull qwen2.5:3b
+npx tsx tools/observatory/ollama-run.ts
+npx tsx tools/observatory/serve.ts tools/observatory/.live/state.db
+```
+
+### Configuring Ollama is not enough on its own
+
+Setting `ollamaBaseUrl` and `inferenceModel` does **not** route inference to
+Ollama. `InferenceRouter.selectModel()` tries the hardcoded routing-matrix
+candidates before the operator's configured model, and
+`ModelRegistry.initialize()` seeds those Conway/OpenAI baseline models as
+enabled on every startup. The configured-model fallback below it is commented
+"handles local/Ollama setups where routing-matrix models are absent" — but they
+are never absent, so it is unreachable in practice.
+
+The result is a turn that goes to `api.conway.tech` with your API key while the
+log says otherwise. `ollama-run.ts` works around it by disabling the non-Ollama
+rows in `model_registry` before the loop starts.
+
+Two things worth fixing upstream:
+
+- `selectModel()` should prefer the operator's explicitly configured model over
+  the routing matrix, or skip matrix candidates whose provider has no usable
+  credentials.
+- `[THINK] Routing inference (…, model: X)` logs `inference.getDefaultModel()`,
+  not the model the router actually selected. When these disagree — exactly when
+  you need the log — it prints the wrong one.
+
 ## Two things the console surfaces
 
 **Blocked calls are undercounted by `policy_decisions`.** A tool call can be
