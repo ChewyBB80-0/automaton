@@ -65,6 +65,7 @@ import { createWorkerInferenceBridge } from "./worker-inference-bridge.js";
 import { ProviderRegistry } from "../inference/provider-registry.js";
 import { UnifiedInferenceClient } from "../inference/inference-client.js";
 import { isIdleOnlyTool } from "./idle-only-tools.js";
+import { probeCapabilities, gateToolsByCapability } from "./capability-probe.js";
 
 const logger = createLogger("loop");
 const MAX_TOOL_CALLS_PER_TURN = 10;
@@ -98,7 +99,26 @@ export async function runAgentLoop(
 
   const builtinTools = createBuiltinTools(identity.sandboxId);
   const installedTools = loadInstalledTools(db);
-  const tools = [...builtinTools, ...installedTools];
+  const allTools = [...builtinTools, ...installedTools];
+
+  // Withhold tools whose backing service is provably absent, so the model is
+  // not offered capabilities that can only fail. Gating is positive-only: an
+  // inconclusive probe leaves the tool in place.
+  const capabilityReport = await probeCapabilities({
+    conwayApiUrl: config.conwayApiUrl,
+    apiKey: identity.apiKey,
+    rpcUrl: config.rpcUrl,
+  });
+  const { tools, gated } = gateToolsByCapability(allTools, capabilityReport);
+  if (gated.length > 0) {
+    log(
+      config,
+      `[CAPABILITY] Withheld ${gated.length} tool(s) with no working backend: ` +
+        gated.map((g) => g.name).join(", "),
+    );
+    for (const g of gated) db.setKV(`gated_tool:${g.name}`, g.reason);
+  }
+  db.setKV("capability_report", JSON.stringify(capabilityReport));
   const toolContext: ToolContext = {
     identity,
     config,
