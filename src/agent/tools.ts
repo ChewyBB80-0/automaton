@@ -3287,6 +3287,77 @@ export function toolsToInferenceFormat(
 }
 
 /**
+ * Validate a tool call's arguments against the tool's own JSON schema.
+ *
+ * The `required` array in each tool's `parameters` is advisory to the model —
+ * nothing enforces it at runtime, and tool implementations read arguments with
+ * casts like `(args.title as string).trim()`. A model that omits a required
+ * field therefore reaches `undefined.trim()` and throws a TypeError, which the
+ * caller can only surface as an opaque "Cannot read properties of undefined".
+ *
+ * Checking here turns that crash into a message naming the offending argument,
+ * which the model can act on and retry.
+ *
+ * Returns null when the arguments are acceptable, or an error string to return
+ * to the model in place of executing the tool.
+ */
+export function validateToolArgs(
+  tool: AutomatonTool,
+  args: Record<string, unknown>,
+): string | null {
+  const schema = tool.parameters as {
+    required?: unknown;
+    properties?: Record<string, { type?: string }>;
+  };
+
+  const required = Array.isArray(schema?.required)
+    ? (schema.required as unknown[]).filter(
+        (k): k is string => typeof k === "string",
+      )
+    : [];
+  if (required.length === 0) return null;
+
+  const missing = required.filter((key) => {
+    const value = args?.[key];
+    return value === undefined || value === null;
+  });
+
+  if (missing.length > 0) {
+    return (
+      `Invalid arguments: ${tool.name} is missing required ` +
+      `argument${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}. ` +
+      `Required: ${required.join(", ")}. ` +
+      `Call ${tool.name} again with every required argument.`
+    );
+  }
+
+  // A present-but-wrong-typed argument crashes the same way a missing one does
+  // (e.g. a number where the implementation calls .trim()). Only primitives are
+  // checked — objects and arrays are left to the implementation.
+  const properties = schema?.properties ?? {};
+  const mistyped: string[] = [];
+  for (const key of required) {
+    const declared = properties[key]?.type;
+    if (declared !== "string" && declared !== "number" && declared !== "boolean") {
+      continue;
+    }
+    const actual = typeof args[key];
+    if (actual !== declared) {
+      mistyped.push(`${key} (expected ${declared}, got ${actual})`);
+    }
+  }
+
+  if (mistyped.length > 0) {
+    return (
+      `Invalid arguments: ${tool.name} received the wrong type for ` +
+      `${mistyped.join(", ")}. Call ${tool.name} again with corrected arguments.`
+    );
+  }
+
+  return null;
+}
+
+/**
  * Execute a tool call and return the result.
  * Optionally evaluates against the policy engine before execution.
  */
@@ -3337,6 +3408,21 @@ export async function executeTool(
         error: `Policy denied: ${decision.reasonCode} — ${decision.humanMessage}`,
       };
     }
+  }
+
+  // Argument validation runs after policy evaluation so a malformed call is
+  // still audited, but before execute() so a missing argument returns an
+  // actionable message instead of a TypeError from inside the implementation.
+  const argError = validateToolArgs(tool, args);
+  if (argError) {
+    return {
+      id: ulid(),
+      name: toolName,
+      arguments: args,
+      result: "",
+      durationMs: Date.now() - startTime,
+      error: argError,
+    };
   }
 
   try {

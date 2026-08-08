@@ -70,16 +70,19 @@ for (const c of toolCalls) {
   callsByTurn.get(c.turn_id)!.push(c);
 }
 
-// A tool call can end three different ways that all look like "not ok", and
+// A tool call can end four different ways that all look like "not ok", and
 // conflating them hides real problems:
 //   1. the policy engine refused it        → error starts with "Policy denied:"
-//   2. the tool implementation threw       → error set, but not a policy denial
-//   3. the tool's own guard refused it     → no error, result starts "Blocked:"
-// Only (1) lands in policy_decisions as a denial. (3) is logged there as allow.
+//   2. arguments failed validation         → error starts with "Invalid arguments:"
+//   3. the tool implementation threw       → error set, none of the above
+//   4. the tool's own guard refused it     → no error, result starts "Blocked:"
+// Only (1) lands in policy_decisions as a denial. (4) is logged there as allow.
 const isPolicyDenied = (c: any) =>
   !!c.error && String(c.error).startsWith("Policy denied:");
+const isInvalidArgs = (c: any) =>
+  !!c.error && String(c.error).startsWith("Invalid arguments:");
 const isCrash = (c: any) =>
-  !!c.error && !String(c.error).startsWith("Policy denied:");
+  !!c.error && !isPolicyDenied(c) && !isInvalidArgs(c);
 const isInlineBlocked = (c: any) =>
   !c.error && typeof c.result === "string" && c.result.startsWith("Blocked:");
 const isBlocked = (c: any) => isPolicyDenied(c) || isInlineBlocked(c);
@@ -87,6 +90,7 @@ const isBlocked = (c: any) => isPolicyDenied(c) || isInlineBlocked(c);
 const blockedCalls = toolCalls.filter(isBlocked);
 const inlineBlocked = toolCalls.filter(isInlineBlocked);
 const crashed = toolCalls.filter(isCrash);
+const invalidArgs = toolCalls.filter(isInvalidArgs);
 
 // ─── Policy decisions ──────────────────────────────────────────────
 const decisions = has("policy_decisions")
@@ -167,6 +171,18 @@ const AUDIT_CALLOUT = auditGap
     </div>`
   : "";
 
+const ARGS_CALLOUT = invalidArgs.length > 0
+  ? `<div class="callout">
+      <h2>${invalidArgs.length} call${invalidArgs.length === 1 ? "" : "s"} rejected for malformed arguments</h2>
+      <p>Caught by schema validation in <code>executeTool</code> before the implementation ran, so the
+      model got a message naming the missing argument instead of a <code>TypeError</code> from inside
+      the tool. The turn is still spent, but the model can correct itself:</p>
+      ${invalidArgs
+        .map((c) => `<p class="crash-line mono">${esc(c.name)} → ${esc(firstLine(c.error))}</p>`)
+        .join("")}
+    </div>`
+  : "";
+
 const CRASH_CALLOUT = crashed.length > 0
   ? `<div class="callout callout-crash">
       <h2>${crashed.length} tool call${crashed.length === 1 ? "" : "s"} crashed on malformed arguments</h2>
@@ -197,6 +213,8 @@ const rows = {
   CRASHED: String(crashed.length),
   AUDIT_CALLOUT,
   CRASH_CALLOUT,
+  ARGS_CALLOUT,
+  INVALID_ARGS: String(invalidArgs.length),
   DENIED_POLICY: String(denied.length),
   INLINE_BLOCKED: String(inlineBlocked.length),
   NAME: esc(name),
@@ -293,6 +311,8 @@ const rows = {
                   ? "chip chip-denied"
                   : isCrash(c)
                     ? "chip chip-crash"
+                    : isInvalidArgs(c)
+                      ? "chip chip-blocked"
                     : isInlineBlocked(c)
                       ? "chip chip-blocked"
                       : "chip";
@@ -300,6 +320,8 @@ const rows = {
                   ? " · denied"
                   : isCrash(c)
                     ? " · crashed"
+                    : isInvalidArgs(c)
+                      ? " · bad args"
                     : isInlineBlocked(c)
                       ? " · blocked"
                       : "";
