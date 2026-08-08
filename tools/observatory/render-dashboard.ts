@@ -215,15 +215,45 @@ const AUDIT_CALLOUT = auditGap
     </div>`
   : "";
 
+// Count how often the *same* malformed call repeats. Validation converts a
+// crash into a legible rejection; whether the model acts on that rejection is
+// a separate question, and the answer is measurable rather than assumed.
+const argFailureCounts = new Map<string, number>();
+for (const c of invalidArgs) {
+  const m = /missing required arguments?: ([^.]+)/.exec(String(c.error));
+  const key = `${c.name} — missing ${m ? m[1].trim() : "argument"}`;
+  argFailureCounts.set(key, (argFailureCounts.get(key) ?? 0) + 1);
+}
+const argFailuresRanked = [...argFailureCounts.entries()].sort((a, b) => b[1] - a[1]);
+const topArgFailure = argFailuresRanked[0];
+const repeatedWithoutCorrection = topArgFailure && topArgFailure[1] > 1;
+
 const ARGS_CALLOUT = invalidArgs.length > 0
   ? `<div class="callout">
       <h2>${invalidArgs.length} call${invalidArgs.length === 1 ? "" : "s"} rejected for malformed arguments</h2>
-      <p>Caught by schema validation in <code>executeTool</code> before the implementation ran, so the
-      model got a message naming the missing argument instead of a <code>TypeError</code> from inside
-      the tool. The turn is still spent, but the model can correct itself:</p>
-      ${invalidArgs
-        .map((c) => `<p class="crash-line mono">${esc(c.name)} → ${esc(firstLine(c.error))}</p>`)
-        .join("")}
+      <p>Schema validation in <code>executeTool</code> catches these before the implementation
+      runs, so the model receives a message naming the missing argument instead of a
+      <code>TypeError</code> from inside the tool. That contains the failure and keeps the
+      audit trail readable.</p>
+      ${
+        repeatedWithoutCorrection
+          ? `<p><strong>It does not teach the model.</strong> ${topArgFailure[1]} of these
+             ${invalidArgs.length} were the same call, rejected with the same message naming the
+             same argument, and repeated unchanged:</p>
+             ${argFailuresRanked
+               .slice(0, 3)
+               .map(
+                 ([k, n]) =>
+                   `<p class="crash-line mono">${n}× &nbsp;${esc(k)}</p>`,
+               )
+               .join("")}
+             <p>Validation is a floor, not a fix — it stops the crash and leaves the loop intact.
+             Correcting course is the model's job, and this one did not.</p>`
+          : argFailuresRanked
+              .slice(0, 3)
+              .map(([k, n]) => `<p class="crash-line mono">${n}× &nbsp;${esc(k)}</p>`)
+              .join("")
+      }
     </div>`
   : "";
 
