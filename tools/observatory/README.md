@@ -1,5 +1,9 @@
 # Observatory
 
+> Running without Conway Cloud is tracked in **[OFFLINE.md](./OFFLINE.md)** —
+> what already works locally, what blocks a clean offline run, and the changes
+> needed.
+
 A read-only operator console for the automaton runtime.
 
 The runtime already records everything an operator needs — `turns`, `tool_calls`,
