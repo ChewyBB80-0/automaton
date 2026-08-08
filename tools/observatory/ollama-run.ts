@@ -41,7 +41,14 @@ const OUT = process.env.AUTOMATON_DEMO_OUT || path.join(HERE, ".live");
 fs.mkdirSync(OUT, { recursive: true });
 
 const DB_PATH = path.join(OUT, "state.db");
-if (fs.existsSync(DB_PATH)) fs.unlinkSync(DB_PATH);
+
+// LIVE=1 keeps waking the agent until the process is stopped, instead of
+// running a single cycle. FRESH=1 starts from an empty database.
+const LIVE = process.env.LIVE === "1";
+const SLEEP_MS = Number(process.env.SLEEP_MS || 10_000);
+const FRESH = process.env.FRESH === "1" || !LIVE;
+
+if (FRESH && fs.existsSync(DB_PATH)) fs.unlinkSync(DB_PATH);
 
 // Tight caps so the treasury rules actually bite within a short run.
 const treasuryPolicy = {
@@ -193,16 +200,51 @@ console.log("─".repeat(72));
 
 const started = Date.now();
 
-await runAgentLoop({
-  identity,
-  config,
-  db,
-  conway,
-  inference,
-  policyEngine,
-  spendTracker,
-  ollamaBaseUrl: OLLAMA_BASE_URL,
-});
+const loopOnce = () =>
+  runAgentLoop({
+    identity,
+    config,
+    db,
+    conway,
+    inference,
+    policyEngine,
+    spendTracker,
+    ollamaBaseUrl: OLLAMA_BASE_URL,
+  });
+
+if (LIVE) {
+  let stopping = false;
+  const stop = () => {
+    stopping = true;
+    console.log("\nstopping after the current cycle…");
+  };
+  process.on("SIGINT", stop);
+  process.on("SIGTERM", stop);
+
+  console.log(`live mode: waking every ${SLEEP_MS}ms until stopped\n`);
+
+  let cycle = 0;
+  while (!stopping) {
+    cycle++;
+    const t0 = Date.now();
+    try {
+      await loopOnce();
+    } catch (err: any) {
+      // One bad cycle must not end the run — that is the whole point of a
+      // continuously running agent.
+      console.error(`cycle ${cycle} failed: ${err?.message || err}`);
+    }
+    const turnsNow = (db.raw.prepare(`SELECT COUNT(*) c FROM turns`).get() as any).c;
+    console.log(
+      `cycle ${cycle} done in ${((Date.now() - t0) / 1000).toFixed(1)}s — ` +
+        `${turnsNow} turns total, balance ${(balanceCents / 100).toFixed(2)}`,
+    );
+    if (stopping) break;
+    await new Promise((r) => setTimeout(r, SLEEP_MS));
+  }
+} else {
+  await loopOnce();
+}
 
 // ─── Summary ───────────────────────────────────────────────────────
 const raw = db.raw;
